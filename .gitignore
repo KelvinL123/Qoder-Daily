@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+*_result.json
+qoder_tokens.json
+qoder_machine_id
