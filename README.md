@@ -2,7 +2,7 @@
 
 # 🧭 Qoder Daily
 
-**Qoder 中国版每日签到 · 单文件青龙脚本 · 多账号 · Token 自动续期**
+**Qoder 中国版每日签到 + 国际版设备授权登录 · 单文件青龙脚本 · 多账号 · Token 自动续期**
 
 <img src="https://img.shields.io/github/v/release/L0NE-6/Qoder-Daily?style=flat-square&label=Release&color=2ea44f" />
 <img src="https://img.shields.io/github/stars/L0NE-6/Qoder-Daily?style=flat-square&label=Stars&color=FFC75F" />
@@ -18,7 +18,7 @@
 
 ## ✨ 这是什么
 
-一个脚本完成 Qoder 中国版的每日签到：读取实时活动列表 → 领取 `CLAIM_BENEFIT` 活动 → 输出中文报告并推送。配套登录工具走官方设备授权，浏览器确认一次即可拿到 Token，不需要验证码、不需要抓包。
+一个脚本完成 Qoder 中国版的每日签到：读取实时活动列表 → 领取 `CLAIM_BENEFIT` 活动 → 输出中文报告并推送。配套登录工具走官方设备授权，支持中国版 / 国际版，浏览器确认一次即可拿到 Token，不需要验证码、不需要抓包。
 
 > 🎯 一句话：**配好 Token，剩下的交给它。**
 >
@@ -29,6 +29,7 @@
 核心特性：
 
 - ✅ **每日签到**：自动找可领活动并领取 credits，已领取识别为今日完成
+- 🌍 **国际版登录**：`qoder_login.py --region global` 获取国际版 Token（国际版无签到活动）
 - 🔐 **Token 自动续期**：refresh_token 轮换后自动落盘，长期无人值守
 - 👥 **多账号**：环境变量换行或 `&` 分隔，逐账号容错
 - 📢 **多渠道推送**：PushPlus / Bark / 企业微信 / 钉钉 / 青龙通知
@@ -128,7 +129,7 @@ python qoder_login.py --region global # 国际版备用
 
 - **Token 多久失效？** 配了 refresh_token 会自动续期；只有 access token 时过期需重新登录。
 - **授权页打不开/超时？** 重新运行工具再确认一次；确认时请用要签到的那个账号。
-- **国际版能签到吗？** 每日签到活动只有中国版有，国际版仅登录工具保留。
+- **国际版能签到吗？** 每日签到活动只有中国版有；国际版可用设备授权登录工具获取 Token。
 
 ## 📁 目录结构
 
