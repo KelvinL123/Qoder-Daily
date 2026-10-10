@@ -36,6 +36,10 @@ jobs:
       - name: Run Qoder Daily
         env:
           QODER_TOKENS: ${{ secrets.QODER_TOKENS }}
+          QODER_GLOBAL_TOKENS: ${{ secrets.QODER_GLOBAL_TOKENS }}
+          QODER_MACHINE_TOKEN: ${{ secrets.QODER_MACHINE_TOKEN }}
+          QODER_MACHINE_CODE: ${{ secrets.QODER_MACHINE_CODE }}
+          QODER_MACHINE_TYPE: ${{ secrets.QODER_MACHINE_TYPE }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           BARK_URL: ${{ secrets.BARK_URL }}
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}

@@ -10,7 +10,7 @@
   python qoder_login.py --note 主号     # 指定备注名
   python qoder_login.py --no-verify     # 跳过登录后校验
 
-输出（直接作为 QODER_TOKENS 的一行）:
+输出（直接作为环境变量的一行；中国版 QODER_TOKENS / 国际版 QODER_GLOBAL_TOKENS）:
   access_token|refresh_token
 
 说明:
@@ -243,10 +243,14 @@ def main():
     if note:
         env_line = note + "|" + env_line
     print("\n" + "-" * 50)
-    print("✅ 将下面这行追加到 QODER_TOKENS")
+    target = "QODER_GLOBAL_TOKENS" if region_key == "global" else "QODER_TOKENS"
+    print("✅ 将下面这行追加到 %s" % target)
     print("-" * 50)
     print(env_line)
     print("-" * 50)
+    if region_key == "global":
+        print("ℹ️ 国际版签到需要设备风控身份：可设置 QODER_MACHINE_TOKEN / QODER_MACHINE_CODE /")
+        print("   QODER_MACHINE_TYPE，或用 QODER_UMID_PATH 指向 runtime-info 组件。")
     return 0
 
 
