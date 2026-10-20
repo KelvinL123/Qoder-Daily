@@ -9,6 +9,7 @@
    2. 找 actionType=CLAIM_BENEFIT 且 claimStatus=CLAIMABLE 的活动
    3. POST /sash/api/v1/me/campaigns/{campaignId}/claim  领取 credits
    4. 已领取（CLAIMED / replayed / 409 ALREADY_CLAIMED）识别为今日已领，不算失败
+    5. Pro 升级包：GET eligibility → eligible 时 POST claim，一次性 +1800
 
    国际版（每日 100 Credits）的活动只下发给带设备风控头的请求
    （Cosy-MachineToken / Cosy-MachineCode / Cosy-MachineType，由本机 UMID
@@ -72,6 +73,8 @@ REGIONS = {
 }
 CAMPAIGNS_PATH = "/sash/api/v1/me/campaigns"
 CAMPAIGNS_QUERY = "?forceRefresh=true"
+PRO_ELIGIBILITY_PATH = "/sash/api/v1/me/pro-upgrade/eligibility"
+PRO_CLAIM_PATH = "/sash/api/v1/me/pro-upgrade/claim"
 DEVICE_REFRESH_PATH = "/api/v1/deviceToken/refresh"
 JOB_REFRESH_PATH = "/api/v1/jobToken/refresh"
 SASH_CLIENT_TYPE = "10"
@@ -622,6 +625,41 @@ def do_checkin(account):
     return True, text
 
 
+def do_pro_upgrade(account):
+    """领取一次性 Pro 升级包。返回 (ok, newly_claimed, message)。"""
+    headers, _note = risky_sash_headers(account, account.get("uid", ""))
+    eligibility = request("GET", account["base"] + PRO_ELIGIBILITY_PATH,
+                          headers=headers, retries=1)
+    if eligibility.status_code == 401:
+        return False, False, "Pro 资格查询鉴权失败"
+    if eligibility.status_code in (403, 404, 410):
+        return True, False, "Pro 升级包未开放或已领取"
+    payload = json_of(eligibility)
+    if eligibility.status_code != 200:
+        return False, False, "Pro 资格查询失败 HTTP %s" % eligibility.status_code
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    eligible = payload.get("eligible")
+    if eligible is None:
+        eligible = data.get("eligible")
+    if not eligible:
+        return True, False, "Pro 升级包不可领取（已领或活动未开放）"
+
+    headers["content-type"] = "application/json"
+    headers["origin"] = account["base"]
+    response = request("POST", account["base"] + PRO_CLAIM_PATH,
+                       headers=headers, body={}, retries=1)
+    body = json_of(response)
+    text = json.dumps(body, ensure_ascii=False).upper()
+    if response.status_code == 409 or "ALREADY" in text:
+        return True, False, "Pro 升级包已领取过，本次不计新增"
+    if response.status_code != 200:
+        return False, False, "Pro 升级包领取失败 HTTP %s" % response.status_code
+    if body.get("success") is False:
+        return False, False, "Pro 升级包领取失败：%s" % first_text(
+            body.get("message"), body.get("msg"), "上游返回失败")
+    return True, True, "Pro 升级包领取成功 +1800"
+
+
 # ---------- 推送 ----------
 
 def post_json(url, payload, timeout=20):
@@ -797,6 +835,10 @@ def main():
             icon = "✅" if success else "ℹ️"
             log("   %s %s" % (icon, message))
             report.append("账号%d %s: %s %s" % (index, account["note"], icon, message))
+            pro_ok, pro_new, pro_message = do_pro_upgrade(account)
+            pro_icon = "✅" if pro_ok and pro_new else ("ℹ️" if pro_ok else "❌")
+            log("   %s %s" % (pro_icon, pro_message))
+            report.append("账号%d %s: %s %s" % (index, account["note"], pro_icon, pro_message))
         except Exception as error:
             log("   ❌ 异常: %s" % error)
             report.append("账号%d %s: ❌ %s" % (index, account["note"], error))
