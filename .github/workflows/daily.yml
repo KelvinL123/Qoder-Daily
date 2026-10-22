@@ -21,6 +21,7 @@ jobs:
     timeout-minutes: 20
     env:
       TZ: Asia/Shanghai
+      QODER_CACHE_KEY: ${{ secrets.QODER_CACHE_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -33,17 +34,25 @@ jobs:
       - name: Install deps
         run: pip install -r requirements.txt
 
-      # Credential-bearing state must not enter a public/fork-readable cache.
-      - name: Restore token state (private default branch only)
-        id: token-state
-        if: github.event.repository.private == true && github.ref_name == github.event.repository.default_branch
+      - name: Warn missing cache encryption key
+        if: ${{ env.QODER_CACHE_KEY == '' }}
+        run: |
+          echo "::warning::未设置 QODER_CACHE_KEY，本次将跳过 token 状态持久化；轮换后的 refresh_token 可能无法在下次运行恢复。"
+
+      - name: Restore encrypted token state
+        if: ${{ env.QODER_CACHE_KEY != '' }}
         uses: actions/cache/restore@v4
         with:
-          path: |
-            qoder_tokens.json
-            qoder_machine_id
-          key: qoder-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
-          restore-keys: qoder-state-v1-
+          path: .qoder-cache/state.enc
+          key: qoder-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: qoder-state-v2-
+
+      - name: Decrypt token state
+        if: ${{ env.QODER_CACHE_KEY != '' && hashFiles('.qoder-cache/state.enc') != '' }}
+        run: |
+          openssl enc -d -aes-256-cbc -pbkdf2 -salt -pass env:QODER_CACHE_KEY -in .qoder-cache/state.enc -out "$RUNNER_TEMP/qoder-state.tar"
+          tar -xf "$RUNNER_TEMP/qoder-state.tar" -C .
+          rm -f "$RUNNER_TEMP/qoder-state.tar"
 
       - name: Run Qoder Daily
         env:
@@ -60,12 +69,24 @@ jobs:
         run: python qoder_daily.py
 
       # Refresh may succeed before a later request fails; retain rotated tokens.
-      - name: Save token state (private default branch only)
-        if: always() && steps.token-state.outcome == 'success'
+      - name: Encrypt token state
+        if: ${{ always() && env.QODER_CACHE_KEY != '' }}
+        run: |
+          mkdir -p .qoder-cache
+          files=""
+          for f in qoder_tokens.json qoder_machine_id; do
+            if [ -f "$f" ]; then files="$files $f"; fi
+          done
+          if [ -n "$files" ]; then
+            tar -cf "$RUNNER_TEMP/qoder-state.tar" $files
+            openssl enc -aes-256-cbc -pbkdf2 -salt -pass env:QODER_CACHE_KEY -in "$RUNNER_TEMP/qoder-state.tar" -out .qoder-cache/state.enc
+            rm -f "$RUNNER_TEMP/qoder-state.tar"
+          fi
+
+      - name: Save encrypted token state
+        if: ${{ always() && env.QODER_CACHE_KEY != '' && hashFiles('.qoder-cache/state.enc') != '' }}
         uses: actions/cache/save@v4
         with:
-          path: |
-            qoder_tokens.json
-            qoder_machine_id
-          key: qoder-state-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .qoder-cache/state.enc
+          key: qoder-state-v2-${{ github.run_id }}-${{ github.run_attempt }}
 

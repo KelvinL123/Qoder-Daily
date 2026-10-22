@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.0.5（2026-10-22）
+
+- 修复 token 轮换后索引断裂（issue #1）：保存时同时更新原始配置指纹与当前令牌指纹，下一轮仍用原环境变量 / Secret 启动也能恢复最新 access / refresh token；
+- 新增 Actions 跨运行状态保存：加密缓存 `qoder_tokens.json` 与 `qoder_machine_id`，配置 `QODER_CACHE_KEY` 后公开 / 私有 fork 都可安全续用；
+- Actions 在脚本异常时也会尝试保存已完成的 token 轮换，避免旧 Secret 中的刷新令牌失效后无法恢复；
+- 新增无凭据回归测试与 tests workflow（7 项 token store 测试全部通过）。
+
 ## v1.0.4（2026-10-20）
 
 - 新增一次性 Pro 升级包：`eligibility → claim`，成功领取 +1800 积分。

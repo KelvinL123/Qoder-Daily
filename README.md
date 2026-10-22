@@ -73,6 +73,7 @@
 | Secret | 对应环境变量 | 必填 |
 |---|---|---|
 | `QODER_TOKENS` | QODER_TOKENS | 必填 |
+| `QODER_CACHE_KEY` | QODER_CACHE_KEY（仅工作流使用） | 启用 Actions 时必填：加密轮换 token 缓存的随机长字符串 |
 | `QODER_GLOBAL_TOKENS` / `QODER_MACHINE_TOKEN` / `QODER_MACHINE_CODE` / `QODER_MACHINE_TYPE` | 同名环境变量 | 有国际版账号时填 |
 | `PUSHPLUS_TOKEN` / `BARK_URL` / `WECOM_WEBHOOK` / `DINGTALK_WEBHOOK` / `DINGTALK_SECRET` | 同名推送变量 | 可选 |
 
@@ -82,12 +83,8 @@
 
 - `refresh_token` 轮换后，下一轮进程仍从原始环境变量 / Secret 启动。
   脚本同时保留原始凭据指纹到最新令牌的索引，配置无需每次手动改写。
-- **私有仓库的默认分支**会在运行前恢复、运行后保存 `qoder_tokens.json` 和
-  `qoder_machine_id` 到 Actions cache；后续任务异常时也会尝试保存已轮换的令牌。
-  每次运行 / 重跑使用独立 cache key，并通过共同前缀恢复最新状态。
-- **公开仓库不缓存这些凭据文件**。公开仓库默认分支缓存可能被 fork PR 的工作流读取，
-  不能把 Secret 注入后的明文令牌直接放进去。需要跨运行自动续期时，请建立私有副本，
-  或自行接入经过保护的持久化存储；公开 fork 当前仍需在失效后手动更新凭据。
+- Actions 会在运行前恢复、运行后保存 `qoder_tokens.json` 和 `qoder_machine_id` 到 Actions cache；后续任务异常时也会尝试保存已轮换的令牌。
+- 缓存文件会先用 `QODER_CACHE_KEY` 加密再写入；公开 fork 的 cache 即使能被工作流恢复，没有密钥也读不到明文。每次运行 / 重跑使用独立 cache key，并通过共同前缀恢复最新状态。
 - Cache 可能被清理或淘汰；丢失轮换状态且原刷新令牌已失效时，需要重新授权。
   状态文件已在 `.gitignore` 中排除，不要手动提交或上传为公开 artifact。
 

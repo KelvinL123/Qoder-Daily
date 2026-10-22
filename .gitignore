@@ -3,4 +3,5 @@ __pycache__/
 *_result.json
 qoder_tokens.json
 qoder_machine_id
+.qoder-cache/
 qoder_umid/
