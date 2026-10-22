@@ -29,7 +29,7 @@
 核心特性：
 
 - ✅ **每日签到**：自动找可领活动并领取 credits，已领取识别为今日完成
-- 🎁 **Pro 升级包**：`eligibility → claim` 自动领取一次性 +1800 积分；已领取不重复计数
+- 🎁 **Pro 升级包**：从 campaigns 发现，先用只读 `/reward` 核对面值，再 claim 并用额度回读核对真实增量；国际版直接跳过
 - 🌍 **国际版签到**：每天 100 Credits，走 `QODER_GLOBAL_TOKENS`；需要 UMID 风控身份（组件 / 环境变量），活动窗口每天 10:00（UTC+8）开启，未开不落已签、后续轮次自动补领
 - 🔐 **Token 自动续期**：refresh_token 轮换后自动落盘，长期无人值守
 - 👥 **多账号**：环境变量换行或 `&` 分隔，逐账号容错
@@ -60,15 +60,17 @@
 | 3 | 「环境变量」里添加 Token，新建定时任务（见下方 cron 示例） |
 
 ```cron
-20 8 * * * python qoder_daily.py
+5 10 * * * task qoder_daily.py
 ```
+
+> 建议同时配置 `QODER_WINDOW_RETRY=1`，让 10:00-10:30 的活动行延迟由脚本自动补拉。
 
 ## ☁️ 部署方式二：GitHub Actions（可选，默认手动触发）
 
 1. Fork 本仓库（或直接使用本仓库，Secrets 只能配在你自己的仓库里）。
 2. 打开 **Settings → Secrets and variables → Actions**，添加下表里的 Secrets。
 3. 打开 **Actions** 标签页，选择 `Qoder Daily`，点 **Run workflow** 手动跑一次验证。
-4. 默认只支持**手动触发**（上游仓库不跑定时，避免空跑）；fork 后想定时，把 `.github/workflows/daily.yml` 里 `schedule:` 两行取消注释（cron 用 UTC，北京时间减 8 小时），之后就会按该时间自动执行。
+4. 默认只支持**手动触发**（上游仓库不跑定时，避免空跑）；fork 后想定时，把 `.github/workflows/daily.yml` 里 `schedule:` 两行取消注释。模板已改为北京时间 10:05（UTC `5 2 * * *`），并启用 10:00-10:30 开窗延迟重试。
 
 | Secret | 对应环境变量 | 必填 |
 |---|---|---|
@@ -113,6 +115,8 @@ python qoder_login.py --region global # 国际版（Token 填 QODER_GLOBAL_TOKEN
 | `QODER_GLOBAL_TOKENS` | 同上，可再加 `\|uid`（`备注\|access\|refresh\|uid`） | 国际版账号，请求走 `openapi.qoder.sh` |
 | `QODER_MACHINE_TOKEN` / `QODER_MACHINE_CODE` / `QODER_MACHINE_TYPE` | 三件套 | 国际版设备风控身份（与组件二选一） |
 | `QODER_UMID_PATH` / `QODER_UMID_NO_INSTALL` | `runtime-info` 路径 / `1` | 指定 UMID 组件；或禁止自动从官方包提取 |
+| `QODER_WINDOW_RETRY` | `1` / `0` | 10:00-10:30 CST 内暂未下发活动行时按 90 秒重试；Actions 模板默认开启 |
+| `QODER_WINDOW_RETRY_MAX` / `QODER_WINDOW_RETRY_GAP` | 次数 / 秒 | 默认最多 16 次、间隔 90 秒 |
 
 ## ⌨️ 命令行参数
 
@@ -125,10 +129,10 @@ python qoder_login.py --region global # 国际版（Token 填 QODER_GLOBAL_TOKEN
 ## 📊 运行效果示例
 
 ```text
-[08:20:01] 👤 [1] 主号  token=dt-abc****wxyz
-[08:20:03]    ✅ 获得 100 credits，30 天有效
-[08:20:04] 账号1 主号: ✅ 获得 100 credits，30 天有效
-[08:20:04] 🕐 2026-10-09 08:20
+[10:05:01] 👤 [1] 主号  token=dt-abc****wxyz
+[10:05:03]    ✅ 获得 100 credits，30 天有效
+[10:05:04] 账号1 主号: ✅ 获得 100 credits，30 天有效
+[10:05:04] 🕐 2026-10-22 10:05
 ```
 
 ## 🗂️ 数据文件说明
@@ -145,6 +149,7 @@ python qoder_login.py --region global # 国际版（Token 填 QODER_GLOBAL_TOKEN
 - **Token 多久失效？** 配了 refresh_token 会自动续期；只有 access token 时过期需重新登录。
 - **授权页打不开/超时？** 重新运行工具再确认一次；确认时请用要签到的那个账号。
 - **国际版能签到吗？** 可以：国际版（每天 100 Credits）只对带设备风控身份（UMID）的请求下发活动。脚本按「环境变量三件套 → `QODER_UMID_PATH` → 本机客户端/qodercli → 官方包提取」获取身份；都没有时如实提示「未领取」，不会记成已签。活动窗口每天 10:00（UTC+8）开启。
+- **Pro +1800 还会有吗？** 官方已不再常规投放。脚本只在 campaigns 里实际发现 Pro/upgrade 行，或 `/reward` 只读核实到至少 1000 Credits 后才领取；不会请求不存在的 `pro-upgrade` 端点，也不会承诺固定 +1800。
 
 ## 📁 目录结构
 

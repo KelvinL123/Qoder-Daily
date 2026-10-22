@@ -5,11 +5,11 @@
 
 📌 功能
    Qoder 每日签到（活动领取制，中国版 / 国际版）：
-   1. GET  /sash/api/v1/me/campaigns?forceRefresh=true  拉实时活动列表
+   1. GET  /sash/api/v1/me/campaigns  拉活动列表（官方客户端不发送 forceRefresh）
    2. 找 actionType=CLAIM_BENEFIT 且 claimStatus=CLAIMABLE 的活动
    3. POST /sash/api/v1/me/campaigns/{campaignId}/claim  领取 credits
    4. 已领取（CLAIMED / replayed / 409 ALREADY_CLAIMED）识别为今日已领，不算失败
-    5. Pro 升级包：GET eligibility → eligible 时 POST claim，一次性 +1800
+    5. Pro 升级包：从 campaigns 中发现，GET /reward 只读核实面值后再 claim
 
    国际版（每日 100 Credits）的活动只下发给带设备风控头的请求
    （Cosy-MachineToken / Cosy-MachineCode / Cosy-MachineType，由本机 UMID
@@ -34,6 +34,7 @@
    WECOM_WEBHOOK   企微群机器人地址或 key（可选）
    DINGTALK_WEBHOOK  钉钉机器人 webhook（可选）
    DINGTALK_SECRET   钉钉加签密钥（可选）
+   QODER_WINDOW_RETRY  【可选】10:00-10:30 CST 内暂未下发时按 90 秒重试（默认 0）
 
 ⌨️ 命令
    python qoder_daily.py                 正常签到
@@ -55,6 +56,7 @@ import sys
 import tarfile
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 import requests
 
@@ -72,14 +74,22 @@ REGIONS = {
     "global": {"base": "https://openapi.qoder.sh", "label": "国际版"},
 }
 CAMPAIGNS_PATH = "/sash/api/v1/me/campaigns"
-CAMPAIGNS_QUERY = "?forceRefresh=true"
-PRO_ELIGIBILITY_PATH = "/sash/api/v1/me/pro-upgrade/eligibility"
-PRO_CLAIM_PATH = "/sash/api/v1/me/pro-upgrade/claim"
+CAMPAIGN_REWARD_PATH = "/sash/api/v1/me/campaigns/%s/reward"
+QUOTA_USAGE_PATH = "/api/v2/quota/usage"
 DEVICE_REFRESH_PATH = "/api/v1/deviceToken/refresh"
 JOB_REFRESH_PATH = "/api/v1/jobToken/refresh"
 SASH_CLIENT_TYPE = "10"
 SASH_USER_AGENT = "Qoder"
 STORE_FILE = os.path.join(SCRIPT_DIR, "qoder_tokens.json")
+CN_TZ = timezone(timedelta(hours=8))
+CLAIM_FAILURE_TEXT = {
+    "REDEMPTION_CODE_OUT_OF_STOCK": "今日名额已发完，等待下一轮",
+    "SAME_PERSON_ALREADY_CLAIMED": "同一设备身份下的其他账号已领取",
+    "CAMPAIGN_NOT_ACTIVE": "活动尚未开放或已结束",
+    "ACHIEVEMENT_NOT_COMPLETED": "活动条件尚未完成",
+    "RISK_BLOCKED": "设备风控未通过",
+    "RISK_DEPENDENCY_UNAVAILABLE": "设备风控依赖暂不可用",
+}
 
 ONLY = None
 REFRESH_ONLY = False
@@ -555,14 +565,175 @@ def refresh_account(account):
 
 def fetch_campaigns(account):
     headers, risk_note = risky_sash_headers(account, account.get("uid", ""))
-    response = request("GET", account["base"] + CAMPAIGNS_PATH + CAMPAIGNS_QUERY,
+    response = request("GET", account["base"] + CAMPAIGNS_PATH,
                        headers=headers)
     if response.status_code in (401, 403) and account.get("refresh"):
         refresh_account(account)
         headers, risk_note = risky_sash_headers(account, account.get("uid", ""))
-        response = request("GET", account["base"] + CAMPAIGNS_PATH + CAMPAIGNS_QUERY,
+        response = request("GET", account["base"] + CAMPAIGNS_PATH,
                            headers=headers)
     return response, risk_note
+
+
+def campaign_rows_from_payload(payload):
+    if not isinstance(payload, dict):
+        return []
+    direct = payload.get("campaigns")
+    if isinstance(direct, list):
+        return direct
+    data = payload.get("data")
+    rows = data.get("campaigns") if isinstance(data, dict) else None
+    return rows if isinstance(rows, list) else []
+
+
+def campaign_id_of(row):
+    return first_text(row.get("campaignId"), row.get("id"))
+
+
+def amount_of(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def campaign_benefit(row):
+    benefit = row.get("benefit") if isinstance(row, dict) else None
+    if not isinstance(benefit, dict):
+        return "", 0.0
+    return first_text(benefit.get("kind")).upper(), amount_of(benefit.get("amount"))
+
+
+def campaign_looks_like_pro_upgrade(row):
+    for key in ("campaignKey", "actionType", "title", "name", "campaignName"):
+        value = str(row.get(key) or "").lower()
+        if "pro" in value or "upgrade" in value:
+            return True
+    kind, amount = campaign_benefit(row)
+    return kind == "CREDITS" and amount >= 1000
+
+
+def fetch_campaign_reward(account, campaign_id):
+    """只读读取活动真实面值；官方活动页使用浏览器头，不带 Cosy-Machine*。"""
+    headers = sash_headers(account["access"])
+    headers["origin"] = account["base"]
+    response = request("GET", account["base"] + CAMPAIGN_REWARD_PATH % campaign_id,
+                       headers=headers, retries=1)
+    if response.status_code != 200:
+        return None
+    payload = json_of(response)
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    benefit = data.get("benefit") if isinstance(data, dict) else None
+    kind = first_text(data.get("kind") if isinstance(data, dict) else "",
+                      benefit.get("kind") if isinstance(benefit, dict) else "").upper()
+    amount = amount_of(benefit.get("amount") if isinstance(benefit, dict) else
+                       (data.get("amount") if isinstance(data, dict) else None))
+    return {"kind": kind, "amount": amount}
+
+
+def quota_total_remaining(account):
+    """读取账户总剩余额度，用于 claim 前后核对真实增量。"""
+    headers, _note = risky_sash_headers(account, account.get("uid", ""))
+    response = request("GET", account["base"] + QUOTA_USAGE_PATH,
+                       headers=headers, retries=1)
+    if response.status_code != 200:
+        return None
+    payload = json_of(response)
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(data, dict):
+        return None
+    total = 0.0
+    seen = False
+    for key in ("userQuota", "addOnQuota"):
+        pool = data.get(key)
+        if isinstance(pool, dict) and pool.get("remaining") is not None:
+            total += amount_of(pool.get("remaining"))
+            seen = True
+    for pool in data.get("dedicatedResourcePackages") or []:
+        if isinstance(pool, dict) and pool.get("remaining") is not None:
+            total += amount_of(pool.get("remaining"))
+            seen = True
+    org = data.get("orgResourcePackage")
+    if isinstance(org, dict) and org.get("remaining") is not None:
+        total += amount_of(org.get("remaining"))
+        seen = True
+    return total if seen else None
+
+
+def claim_response_verdict(response):
+    """把 campaigns claim 响应归一为 claimed / already / blocked / error。"""
+    payload = json_of(response)
+    body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    if not isinstance(body, dict):
+        body = {}
+    status = first_text(body.get("status"), payload.get("status")).upper()
+    failure = first_text(body.get("failureCode"), payload.get("failureCode"),
+                         body.get("errorCode"), payload.get("errorCode")).upper()
+    result = first_text(body.get("result"), payload.get("result")).upper()
+    message = first_text(body.get("message"), body.get("msg"),
+                         payload.get("message"), payload.get("msg"))
+    replayed = body.get("replayed") is True or payload.get("replayed") is True
+    if "ALREADY" in result or "REPLAYED" in result:
+        return "already", 0.0, "活动已领取"
+    if response.status_code == 409:
+        if "ALREADY" in failure or "REPLAYED" in failure or replayed:
+            return "already", 0.0, "活动已领取"
+        return "error", 0.0, message or ("HTTP 409 %s" % (failure or "领取冲突"))
+    if status in ("CLAIMED", "GRANTED", "SUCCESS"):
+        if replayed:
+            return "already", 0.0, "活动已领取"
+        redemption = first_text(body.get("redemptionCode"))
+        amount = amount_of((body.get("benefit") or {}).get("amount")
+                           if isinstance(body.get("benefit"), dict) else None)
+        if redemption:
+            return "claimed", 0.0, "已领取兑换券：" + redemption
+        return "claimed", amount, message or "领取成功"
+    if status == "BLOCKED" or failure == "SAME_PERSON_ALREADY_CLAIMED":
+        return "blocked", 0.0, CLAIM_FAILURE_TEXT.get(failure) or message or "领取被阻塞"
+    if failure in CLAIM_FAILURE_TEXT:
+        return "error", 0.0, CLAIM_FAILURE_TEXT[failure]
+    if 200 <= response.status_code < 300:
+        return "error", 0.0, message or "上游未确认成功"
+    return "error", 0.0, message or ("HTTP %s" % response.status_code)
+
+
+def daily_window_retry_enabled():
+    return _env("QODER_WINDOW_RETRY").lower() in ("1", "true", "yes", "on")
+
+
+def daily_window_active():
+    now = datetime.now(CN_TZ)
+    return now.hour == 10 and now.minute < 30
+
+
+def fetch_campaign_rows(account):
+    response, risk_note = fetch_campaigns(account)
+    if response.status_code in (401, 403):
+        return [], response, risk_note, "签到活动查询失败（HTTP %s），请确认凭证有效且地区选择正确" % response.status_code
+    if response.status_code == 429:
+        return [], response, risk_note, "签到活动查询失败（HTTP 429），请稍后重试"
+    if response.status_code != 200:
+        return [], response, risk_note, "活动列表返回 HTTP %s" % response.status_code
+    return campaign_rows_from_payload(json_of(response)), response, risk_note, ""
+
+
+def pick_daily_campaign(rows):
+    target = None
+    claimed = False
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        action_type = first_text(row.get("actionType")).upper()
+        if action_type not in ("", "CLAIM_BENEFIT"):
+            continue
+        if campaign_looks_like_pro_upgrade(row):
+            continue
+        status = row.get("claimStatus")
+        if status == "CLAIMABLE" and target is None:
+            target = row
+        elif status == "CLAIMED":
+            claimed = True
+    return target, claimed
 
 
 def claim_campaign(account, campaign_id):
@@ -574,33 +745,32 @@ def claim_campaign(account, campaign_id):
 
 
 def do_checkin(account):
-    response, risk_note = fetch_campaigns(account)
-    if response.status_code in (401, 403):
-        return False, "签到活动查询失败（HTTP %s），请确认凭证有效且地区选择正确" % response.status_code
-    if response.status_code == 429:
-        return False, "签到活动查询失败（HTTP 429），请稍后重试"
-    payload = json_of(response)
-    if response.status_code != 200:
-        return False, "活动列表返回 HTTP %s" % response.status_code
+    rows, response, risk_note, error = fetch_campaign_rows(account)
+    if error:
+        return False, error
+    target, claimed = pick_daily_campaign(rows)
 
-    rows = payload.get("campaigns")
-    if not isinstance(rows, list):
-        data = payload.get("data")
-        rows = data.get("campaigns") if isinstance(data, dict) else None
-    rows = rows if isinstance(rows, list) else []
-
-    target = None
-    claimed = False
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        if row.get("actionType") != "CLAIM_BENEFIT":
-            continue
-        status = row.get("claimStatus")
-        if status == "CLAIMABLE" and target is None:
-            target = row
-        elif status == "CLAIMED":
-            claimed = True
+    if (target is None and not claimed and daily_window_retry_enabled()
+            and daily_window_active()):
+        try:
+            max_attempts = min(16, max(1, int(_env("QODER_WINDOW_RETRY_MAX") or "16")))
+        except ValueError:
+            max_attempts = 16
+        try:
+            gap = max(1, int(_env("QODER_WINDOW_RETRY_GAP") or "90"))
+        except ValueError:
+            gap = 90
+        for _attempt in range(max_attempts):
+            if not daily_window_active():
+                break
+            log("   ⏳ 10:00 开窗延迟，%d 秒后重试活动列表" % gap)
+            time.sleep(gap)
+            rows, response, risk_note, error = fetch_campaign_rows(account)
+            if error:
+                return False, error
+            target, claimed = pick_daily_campaign(rows)
+            if target is not None or claimed:
+                break
 
     if target is None:
         if claimed:
@@ -611,69 +781,110 @@ def do_checkin(account):
             return False, "上游暂未给该账号下发每日积分活动（官方活动窗口每天 10:00 UTC+8 开启；若今天已在客户端领过则活动行会消失），稍后再试"
         return False, "当前没有可领取的签到活动"
 
-    campaign_id = first_text(target.get("campaignId"), target.get("campaignKey"))
+    campaign_id = campaign_id_of(target)
     if not campaign_id:
         return False, "活动数据里没有 campaignId，无法领取"
 
     claim = claim_campaign(account, campaign_id)
-    body = json_of(claim)
-    if claim.status_code == 409 or body.get("result") == "ALREADY_CLAIMED" or body.get("replayed") is True:
+    verdict, amount, verdict_message = claim_response_verdict(claim)
+    if verdict == "already":
         return False, "今日已领取"
-    if claim.status_code not in (200, 201):
-        message = first_text(body.get("errorMessage"), body.get("message"), body.get("msg"))
-        if claim.status_code in (401, 403):
-            return False, "领取失败（HTTP %s），请确认凭证有效且地区选择正确 %s" % (claim.status_code, message)
-        if claim.status_code == 429:
-            return False, "领取失败（HTTP 429），请稍后重试 %s" % message
-        return False, "领取失败 HTTP %s %s" % (claim.status_code, message)
-    if first_text(body.get("status")) != "CLAIMED":
-        return False, "签到未完成（上游状态 %s）" % (first_text(body.get("status")) or "未知")
+    if verdict != "claimed":
+        return False, "领取失败：%s" % verdict_message
 
-    benefit = body.get("benefit") if isinstance(body.get("benefit"), dict) else {}
-    amount = benefit.get("amount", target.get("benefit", {}).get("amount") if isinstance(target.get("benefit"), dict) else None)
+    if amount <= 0:
+        _kind, amount = campaign_benefit(target)
     days = None
+    payload = json_of(claim)
+    body = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    benefit = body.get("benefit") if isinstance(body, dict) and isinstance(body.get("benefit"), dict) else {}
     validity = benefit.get("validity") if isinstance(benefit.get("validity"), dict) else {}
     if validity.get("days") is not None:
         days = validity.get("days")
-    text = "获得 %s credits" % (amount if amount is not None else "?")
+    if amount > 0:
+        text = "获得 %s credits" % int(amount)
+    elif verdict_message.startswith("已领取兑换券"):
+        text = verdict_message
+    else:
+        text = "领取已确认，积分回读稍后刷新"
     if days:
         text += "，%s 天有效" % days
     return True, text
 
 
-def do_pro_upgrade(account):
-    """领取一次性 Pro 升级包。返回 (ok, newly_claimed, message)。"""
-    headers, _note = risky_sash_headers(account, account.get("uid", ""))
-    eligibility = request("GET", account["base"] + PRO_ELIGIBILITY_PATH,
-                          headers=headers, retries=1)
-    if eligibility.status_code == 401:
-        return False, False, "Pro 资格查询鉴权失败"
-    if eligibility.status_code in (403, 404, 410):
-        return True, False, "Pro 升级包未开放或已领取"
-    payload = json_of(eligibility)
-    if eligibility.status_code != 200:
-        return False, False, "Pro 资格查询失败 HTTP %s" % eligibility.status_code
-    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
-    eligible = payload.get("eligible")
-    if eligible is None:
-        eligible = data.get("eligible")
-    if not eligible:
-        return True, False, "Pro 升级包不可领取（已领或活动未开放）"
+def discover_pro_campaign(account, rows):
+    """从 campaigns 中找 Pro 升级包；隐藏面值用只读 /reward 核实。"""
+    claimed = None
+    candidates = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        status = first_text(row.get("claimStatus")).upper()
+        if status == "CLAIMED" and campaign_looks_like_pro_upgrade(row) and claimed is None:
+            claimed = row
+        if status == "CLAIMABLE" and campaign_looks_like_pro_upgrade(row):
+            candidates.append(row)
+    if candidates:
+        return candidates[0], claimed, []
 
-    headers["content-type"] = "application/json"
-    headers["origin"] = account["base"]
-    response = request("POST", account["base"] + PRO_CLAIM_PATH,
-                       headers=headers, body={}, retries=1)
-    body = json_of(response)
-    text = json.dumps(body, ensure_ascii=False).upper()
-    if response.status_code == 409 or "ALREADY" in text:
+    probes = []
+    for row in rows:
+        if len(probes) >= 5:
+            break
+        if not isinstance(row, dict) or first_text(row.get("claimStatus")).upper() != "CLAIMABLE":
+            continue
+        campaign_id = campaign_id_of(row)
+        if not campaign_id:
+            continue
+        reward = fetch_campaign_reward(account, campaign_id)
+        if not reward:
+            probes.append("%s:面值不可读" % (campaign_id or "?"))
+            continue
+        kind = str(reward.get("kind") or "").upper()
+        amount = amount_of(reward.get("amount"))
+        probes.append("%s:%s %.0f" % (campaign_id, kind or "?", amount))
+        if kind == "CREDITS" and amount >= 1000:
+            return row, claimed, probes
+    return None, claimed, probes
+
+
+def do_pro_upgrade(account):
+    """从 campaigns 领取一次性 Pro 升级包，并用额度回读核对增量。"""
+    if account.get("region") != "cn":
+        return True, False, "国际版暂无 Pro 升级活动"
+    rows, response, _risk_note, error = fetch_campaign_rows(account)
+    if error:
+        return False, False, "Pro 活动查询失败：%s" % error
+    target, claimed, probes = discover_pro_campaign(account, rows)
+    if target is None:
+        if claimed is not None:
+            return True, False, "Pro 升级包已领取过（campaigns 状态 CLAIMED）"
+        detail = "；已核实 " + "、".join(probes) if probes else ""
+        return True, False, "当前未发现 Pro 升级活动（官方已不再常规投放）" + detail
+    campaign_id = campaign_id_of(target)
+    if not campaign_id:
+        return False, False, "Pro 活动缺少 campaignId"
+
+    before = quota_total_remaining(account)
+    claim = claim_campaign(account, campaign_id)
+    verdict, amount, message = claim_response_verdict(claim)
+    if verdict == "already":
         return True, False, "Pro 升级包已领取过，本次不计新增"
-    if response.status_code != 200:
-        return False, False, "Pro 升级包领取失败 HTTP %s" % response.status_code
-    if body.get("success") is False:
-        return False, False, "Pro 升级包领取失败：%s" % first_text(
-            body.get("message"), body.get("msg"), "上游返回失败")
-    return True, True, "Pro 升级包领取成功 +1800"
+    if verdict != "claimed":
+        return False, False, "Pro 升级包领取失败：%s" % message
+
+    time.sleep(2)
+    after = quota_total_remaining(account)
+    delta = None
+    if before is not None and after is not None:
+        delta = after - before
+    if delta is not None and delta > 0:
+        return True, True, "Pro 升级包领取成功，额度回读 +%d" % int(delta)
+    if delta is not None:
+        return True, True, "Pro 领取已受理，额度回读暂未增加（%.0f → %.0f）" % (before, after)
+    if amount > 0:
+        return True, True, "Pro 升级包领取已受理，活动面值 %.0f（余额回读暂不可用）" % amount
+    return True, True, "Pro 升级包领取已受理，积分到账待回读确认"
 
 
 # ---------- 推送 ----------

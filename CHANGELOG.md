@@ -1,5 +1,15 @@
 # 更新日志
 
+## v1.0.6（2026-10-22）
+
+- 活动列表去掉 `forceRefresh=true`：该参数是本地缓存标记，官方客户端从不发送；旧参数会让服务端过滤掉每日活动行。
+- Pro 升级包改走 campaigns：移除不存在的 `/pro-upgrade/{eligibility,claim}` 端点，改为筛选 Pro/upgrade 行，或通过只读 `/campaigns/{id}/reward` 核对隐藏面值。
+- Pro 对国际版直接跳过，不再发起注定 404 的请求。
+- 领取响应兼容 `data` 解包、`CLAIMED/GRANTED/SUCCESS`、`replayed`，只有 409 + `ALREADY_CLAIMED/REPLAYED` 才按已领处理。
+- Pro 领取前后读取 `/api/v2/quota/usage`，按真实额度差额报告；不再硬编码“+1800”。
+- 新增可选 10:00-10:30 CST 开窗延迟重试；Actions 模板改为北京时间 10:05，并启用最多 16 次、90 秒间隔的延迟重试。
+- 新增 8 项 campaign/Pro/窗口边界离线测试，与原 7 项 token 测试合计 15 项。
+
 ## v1.0.5（2026-10-22）
 
 - 修复 token 轮换后索引断裂（issue #1）：保存时同时更新原始配置指纹与当前令牌指纹，下一轮仍用原环境变量 / Secret 启动也能恢复最新 access / refresh token；
