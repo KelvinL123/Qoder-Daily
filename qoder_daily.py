@@ -11,10 +11,12 @@
    4. 已领取（CLAIMED / replayed / 409 ALREADY_CLAIMED）识别为今日已领，不算失败
     5. Pro 升级包：从 campaigns 中发现，GET /reward 只读核实面值后再 claim
 
-   国际版（每日 100 Credits）的活动只下发给带设备风控头的请求
+   中国版和国际版（每日 100 Credits）的活动只下发给带对应官方设备身份的请求
    （Cosy-MachineToken / Cosy-MachineCode / Cosy-MachineType，由本机 UMID
-   组件生成）。脚本会先找本机组件；Linux 容器里找不到时会从官方
-   qodercli 包提取一份（sha512 校验，可用 QODER_UMID_NO_INSTALL=1 关闭）。
+   组件生成）。中国版使用 Qoder CN 的 runtime-info / qoderclicn 与 UMID 环境 0，
+   国际版使用 Qoder 的 runtime-info / qodercli 与 UMID 环境 3。脚本会按地区
+   查找组件；Linux 容器里找不到时会从对应官方 npm 包提取（sha512 校验，可用
+   QODER_UMID_NO_INSTALL=1 关闭）。
    官方活动窗口每天 10:00（UTC+8）开启，没到点或未下发时按中性文案说明。
 
 🔑 环境变量
@@ -23,10 +25,11 @@
        access_token|refresh_token
        备注|access_token|refresh_token
    QODER_GLOBAL_TOKENS 【国际版】同上，第 4 段可选填 uid（备注|access|refresh|uid）
-   # 国际版风控身份分层（任选其一）：
+   # 中国版 / 国际版风控身份分层（任选其一）：
    #   1) QODER_MACHINE_TOKEN / QODER_MACHINE_CODE / QODER_MACHINE_TYPE 三件套；
-   #   2) QODER_UMID_PATH 指向 runtime-info 组件；
-   #   3) 本机 Qoder 客户端 / qodercli（找不到时自动从官方包提取，QODER_UMID_NO_INSTALL=1 可关闭）。
+   #   2) QODERCN_RUNTIME_INFO（中国版）或 QODER_RUNTIME_INFO（国际版）；
+   #   3) QODER_UMID_PATH 指向通用 runtime-info 组件；
+   #   4) 本机对应地区客户端 / CLI（找不到时自动从官方包提取，QODER_UMID_NO_INSTALL=1 可关闭）。
        access_token 形如 dt-xxxx；refresh_token 形如 drt-xxxx（可选，配了可自动续期）
 
    PUSHPLUS_TOKEN    微信推送通道（可选）
@@ -217,15 +220,20 @@ def persist(account):
 
 # ---------- 上游协议 ----------
 
-# ---------- 设备风控身份（国际版签到依赖） ----------
+# ---------- 设备风控身份（中国版 / 国际版签到依赖） ----------
 
 UMID_DIR = os.path.join(SCRIPT_DIR, "qoder_umid")
 MACHINE_ID_FILE = os.path.join(SCRIPT_DIR, "qoder_machine_id")
 RISK_TTL = 50 * 60
-DEFAULT_CLIENT_VERSION = "0.2.5"
+DEFAULT_CLIENT_VERSION = "1.1.69"
 NPM_PACKAGES = ("https://registry.npmmirror.com", "https://registry.npmjs.org")
 NPM_AUTHORITY = "https://registry.npmjs.org"
-NPM_PACKAGE_PATH = "@qoder-ai%2fqodercli"
+NPM_PACKAGE_PATHS = {
+    "cn": "@qodercn-ai%2fqoderclicn",
+    "global": "@qoder-ai%2fqodercli",
+}
+UMID_RUNTIME_ENV = {"cn": 0, "global": 3}
+UMID_OVERRIDE_ENV = {"cn": "QODERCN_RUNTIME_INFO", "global": "QODER_RUNTIME_INFO"}
 RISK_CACHE = {}
 
 
@@ -279,6 +287,16 @@ def machine_id(account):
     return value
 
 
+def region_key(region):
+    return "global" if str(region or "").lower() in ("global", "intl", "international") else "cn"
+
+
+def region_names(region):
+    if region_key(region) == "global":
+        return ("Qoder",)
+    return ("Qoder CN", "QoderCN")
+
+
 def resource_dirs(region, names):
     dirs = []
     for name in names:
@@ -310,12 +328,14 @@ def resource_dirs(region, names):
             dirs.append("/opt/%s/resources" % slug)
             dirs.append("/usr/lib/%s/resources" % slug)
             dirs.append("/snap/%s/current/resources" % slug)
+    if not sys.platform.startswith("win") and sys.platform != "darwin" \
+            and region_key(region) == "cn":
+        dirs.extend(("/opt/Qoder-CN/resources", "/opt/QoderCN/resources"))
     return dirs
 
 
 def client_version(region):
-    names = ("Qoder", "Qoder CN") if region == "global" else ("Qoder CN", "Qoder")
-    for resources in resource_dirs(region, names):
+    for resources in resource_dirs(region, region_names(region)):
         try:
             with open(os.path.join(resources, "build-manifest.json"), encoding="utf-8") as handle:
                 value = json.load(handle).get("productVersion")
@@ -326,33 +346,52 @@ def client_version(region):
     return DEFAULT_CLIENT_VERSION
 
 
+def umid_directory(region):
+    return os.path.join(UMID_DIR, region_key(region))
+
+
+def cli_runtime_cache_dirs(region):
+    key = region_key(region)
+    prefix = "QODERCN_" if key == "cn" else "QODER_"
+    default_name = ".qoder-cn" if key == "cn" else ".qoder"
+    explicit = _env(prefix + "CONFIG_DIR")
+    if explicit:
+        return [explicit]
+    home = _env(prefix + "CLI_HOME") or _env("GEMINI_CLI_HOME") or os.path.expanduser("~")
+    config_name = _env(prefix + "CONFIG_DIR_NAME") or default_name
+    return [os.path.join(home, config_name)]
+
+
 def find_umid_component(region):
-    names = ("Qoder", "Qoder CN") if region == "global" else ("Qoder CN", "Qoder")
+    key = region_key(region)
     exe_name = "runtime-info.exe" if sys.platform.startswith("win") else "runtime-info"
-    app_env = 3 if region == "global" else 0
-    custom = _env("QODER_UMID_PATH")
+    runtime_env = UMID_RUNTIME_ENV[key]
+    custom = _env(UMID_OVERRIDE_ENV[key]) or _env("QODER_UMID_PATH")
     if custom and os.path.isfile(custom):
-        return custom, (4 if region == "global" else 0), "env"
-    for resources in resource_dirs(region, names):
+        return custom, runtime_env, "env"
+    for resources in resource_dirs(key, region_names(key)):
         path = os.path.join(resources, "umid", exe_name)
         if os.path.isfile(path):
-            return path, app_env, "app"
-    cli_env = 4 if region == "global" else 0
-    home = os.path.expanduser("~")
-    for base in (os.path.join(home, ".qoder", ".bin"), os.path.join(home, ".qoder-cn", ".bin")):
+            return path, runtime_env, "app"
+    for config in cli_runtime_cache_dirs(key):
+        base = os.path.join(config, ".bin")
         try:
             entries = sorted(os.listdir(base), reverse=True)
         except Exception:
             continue
         for entry in entries:
-            if not entry.startswith("umid-"):
+            candidate = os.path.join(base, entry)
+            if os.path.isdir(candidate) and entry.startswith("umid-"):
+                path = os.path.join(candidate, exe_name)
+            elif not os.path.isdir(candidate) and entry.startswith("runtime-info"):
+                path = candidate
+            else:
                 continue
-            path = os.path.join(base, entry, exe_name)
             if os.path.isfile(path):
-                return path, cli_env, "cli"
-    data = os.path.join(UMID_DIR, exe_name)
+                return path, runtime_env, "cli"
+    data = os.path.join(umid_directory(key), exe_name)
     if os.path.isfile(data):
-        return data, 4, "data"
+        return data, runtime_env, "data"
     return None
 
 
@@ -387,8 +426,9 @@ def http_get_bytes(url, timeout=60):
     return response.content
 
 
-def npm_meta(registry):
-    body = http_get_bytes("%s/%s/latest" % (registry, NPM_PACKAGE_PATH), timeout=20)
+def npm_meta(registry, region):
+    package_path = NPM_PACKAGE_PATHS[region_key(region)]
+    body = http_get_bytes("%s/%s/latest" % (registry, package_path), timeout=20)
     payload = json.loads(body.decode("utf-8"))
     dist = payload.get("dist") if isinstance(payload.get("dist"), dict) else {}
     tarball = first_text(dist.get("tarball"))
@@ -422,19 +462,20 @@ def extract_elf(bundle, machine):
         position = end + 1
 
 
-def install_umid_component():
+def install_umid_component(region):
+    key = region_key(region)
     arch = machine_os().rsplit("_", 1)[0]
     machine = {"x86_64": 62, "aarch64": 183}.get(arch)
     if not machine:
         raise RuntimeError("当前 CPU 架构不受支持")
     try:
-        authority = npm_meta(NPM_AUTHORITY)
+        authority = npm_meta(NPM_AUTHORITY, key)
     except Exception:
         authority = None
     errors = []
     for registry in NPM_PACKAGES:
         try:
-            meta = npm_meta(registry)
+            meta = npm_meta(registry, key)
         except Exception as error:
             errors.append("%s：%s" % (registry, error))
             continue
@@ -457,8 +498,17 @@ def install_umid_component():
                 continue
         try:
             with tarfile.open(fileobj=io.BytesIO(body), mode="r:gz") as archive:
-                handle = archive.extractfile("package/bundle/qodercli.js")
-                bundle = handle.read().decode("utf-8", "replace") if handle else ""
+                bundle = ""
+                for member in ("package/bundle/qoder-worker-runtime.mjs",
+                               "package/bundle/qodercli.js"):
+                    try:
+                        handle = archive.extractfile(member)
+                    except KeyError:
+                        handle = None
+                    if handle:
+                        bundle = handle.read().decode("utf-8", "replace")
+                        if bundle:
+                            break
         except Exception as error:
             errors.append("%s：解包失败 %s" % (registry, error))
             continue
@@ -466,20 +516,24 @@ def install_umid_component():
         if not elf:
             errors.append("%s：包里没有本机架构的 UMID 程序" % registry)
             continue
-        os.makedirs(UMID_DIR, exist_ok=True)
-        path = os.path.join(UMID_DIR, "runtime-info")
+        target_dir = umid_directory(key)
+        os.makedirs(target_dir, exist_ok=True)
+        path = os.path.join(target_dir, "runtime-info")
         with open(path, "wb") as output:
             output.write(elf)
         try:
             os.chmod(path, 0o755)
         except Exception:
             pass
-        log("   ✅ 已从官方 qodercli %s 提取 UMID 组件" % (meta["version"] or "?"))
+        package_name = "qoderclicn" if key == "cn" else "qodercli"
+        log("   ✅ 已从官方 %s %s 提取 UMID 组件" % (
+            package_name, meta["version"] or "?"))
         return path
     raise RuntimeError("；".join(errors) if errors else "没有可用来源")
 
 
 def risk_identity(region, uid):
+    region = region_key(region)
     key = "%s:%s" % (region, uid)
     cached = RISK_CACHE.get(key)
     if cached and time.time() - cached[0] < RISK_TTL:
@@ -495,15 +549,18 @@ def risk_identity(region, uid):
         return None, ("设备风控环境变量不完整（需要 QODER_MACHINE_TOKEN / "
                       "QODER_MACHINE_CODE / QODER_MACHINE_TYPE 三件套）")
     component = find_umid_component(region)
-    if component is None and region == "global" and not _env("QODER_UMID_NO_INSTALL"):
+    if component is None and not _env("QODER_UMID_NO_INSTALL"):
         try:
-            log("   📦 未找到本机 UMID 组件，尝试从官方 qodercli 包提取（sha512 校验）")
-            install_umid_component()
+            package_name = "qoderclicn" if region == "cn" else "qodercli"
+            log("   📦 未找到本机 UMID 组件，尝试从官方 %s 包提取（sha512 校验）" %
+                package_name)
+            install_umid_component(region)
         except Exception as error:
             return None, "设备风控组件安装失败：%s" % error
         component = find_umid_component(region)
     if component is None:
-        return None, "本机没有 Qoder 客户端 / qodercli 的 UMID 组件"
+        label = "Qoder CN / qoderclicn" if region == "cn" else "Qoder / qodercli"
+        return None, "本机没有 %s 的 UMID 组件" % label
     try:
         values = run_umid_component(component, uid)
     except Exception as error:
@@ -778,11 +835,16 @@ def do_checkin(account):
     if target is None:
         if claimed:
             return False, "今日已领取"
-        if account.get("region") == "global":
-            if risk_note:
-                return False, "未领取：%s。国际版签到需要本机 Qoder 客户端或 qodercli 的 UMID 组件" % risk_note
-            return False, "上游暂未给该账号下发每日积分活动（官方活动窗口每天 10:00 UTC+8 开启；若今天已在客户端领过则活动行会消失），稍后再试"
-        return False, "当前没有可领取的签到活动"
+        if risk_note:
+            region_label = "中国版" if region_key(account.get("region")) == "cn" else "国际版"
+            return False, (
+                "未领取：%s。%s签到需要对应地区的官方设备身份（UMID）；"
+                "请安装并登录对应客户端，或配置地区 runtime-info 覆盖变量"
+            ) % (risk_note, region_label)
+        return False, (
+            "上游暂未给该账号下发每日积分活动（官方活动窗口每天 10:00 UTC+8 "
+            "开启；若今天已在客户端领过则活动行会消失），稍后再试"
+        )
 
     campaign_id = campaign_id_of(target)
     if not campaign_id:

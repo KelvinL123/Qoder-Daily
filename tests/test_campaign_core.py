@@ -1,4 +1,5 @@
 import ast
+import os
 import unittest
 from pathlib import Path
 
@@ -215,6 +216,89 @@ class CampaignCoreTests(unittest.TestCase):
         self.assertIn("100", message)
         self.assertEqual(2, calls["fetch"])
         self.assertEqual(1, calls["sleep"])
+
+    def test_umid_override_is_region_scoped(self):
+        fake_os = type("FakeOS", (), {
+            "path": type("FakePath", (), {
+                "isfile": staticmethod(lambda path: path.endswith("runtime-info")),
+            })(),
+        })()
+        fake_sys = type("FakeSys", (), {"platform": "linux"})()
+        module = load_functions(
+            "region_key", "find_umid_component",
+            _env=lambda name: {
+                "QODERCN_RUNTIME_INFO": "/cn/runtime-info",
+                "QODER_RUNTIME_INFO": "/intl/runtime-info",
+            }.get(name, ""),
+            UMID_RUNTIME_ENV={"cn": 0, "global": 3},
+            UMID_OVERRIDE_ENV={
+                "cn": "QODERCN_RUNTIME_INFO",
+                "global": "QODER_RUNTIME_INFO",
+            },
+            os=fake_os,
+            sys=fake_sys,
+        )
+        self.assertEqual(
+            ("/cn/runtime-info", 0, "env"),
+            module["find_umid_component"]("cn"),
+        )
+        self.assertEqual(
+            ("/intl/runtime-info", 3, "env"),
+            module["find_umid_component"]("global"),
+        )
+
+    def test_cli_runtime_cache_dirs_do_not_mix_regions(self):
+        module = load_functions(
+            "region_key", "cli_runtime_cache_dirs",
+            _env=lambda name: "",
+            os=os,
+        )
+        cn_dirs = module["cli_runtime_cache_dirs"]("cn")
+        intl_dirs = module["cli_runtime_cache_dirs"]("global")
+        self.assertTrue(cn_dirs[0].endswith(".qoder-cn"))
+        self.assertTrue(intl_dirs[0].endswith(".qoder"))
+        self.assertNotEqual(cn_dirs[0], intl_dirs[0])
+
+    def test_npm_metadata_uses_region_package(self):
+        calls = []
+
+        def fetch(url, timeout=60):
+            calls.append(url)
+            return (
+                '{"version":"1.1.77","dist":{"tarball":"https://example.test/pkg.tgz",'
+                '"integrity":"sha512-test"}}'
+            ).encode("utf-8")
+
+        module = load_functions(
+            "region_key", "npm_meta",
+            NPM_PACKAGE_PATHS={
+                "cn": "@qodercn-ai%2fqoderclicn",
+                "global": "@qoder-ai%2fqodercli",
+            },
+            http_get_bytes=fetch,
+            json=__import__("json"),
+            first_text=lambda *values: next(
+                (value.strip() for value in values
+                 if isinstance(value, str) and value.strip()), ""),
+        )
+        self.assertEqual("1.1.77", module["npm_meta"]("https://registry.test", "cn")["version"])
+        self.assertIn("@qodercn-ai%2fqoderclicn", calls[-1])
+        module["npm_meta"]("https://registry.test", "global")
+        self.assertIn("@qoder-ai%2fqodercli", calls[-1])
+
+    def test_cn_missing_row_reports_identity_requirement(self):
+        module = load_functions(
+            "do_checkin",
+            fetch_campaign_rows=lambda account: (
+                [], FakeResponse(), "本机没有 Qoder CN 的 UMID 组件", ""),
+            pick_daily_campaign=lambda rows: (None, False),
+            daily_window_retry_enabled=lambda: False,
+            region_key=lambda region: "cn" if region == "cn" else "global",
+        )
+        ok, message = module["do_checkin"]({"region": "cn"})
+        self.assertFalse(ok)
+        self.assertIn("中国版", message)
+        self.assertIn("UMID", message)
 
 
 if __name__ == "__main__":

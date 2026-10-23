@@ -61,6 +61,10 @@ jobs:
           QODER_MACHINE_TOKEN: ${{ secrets.QODER_MACHINE_TOKEN }}
           QODER_MACHINE_CODE: ${{ secrets.QODER_MACHINE_CODE }}
           QODER_MACHINE_TYPE: ${{ secrets.QODER_MACHINE_TYPE }}
+          QODERCN_RUNTIME_INFO: ${{ secrets.QODERCN_RUNTIME_INFO }}
+          QODER_RUNTIME_INFO: ${{ secrets.QODER_RUNTIME_INFO }}
+          QODER_UMID_PATH: ${{ secrets.QODER_UMID_PATH }}
+          QODER_UMID_NO_INSTALL: ${{ secrets.QODER_UMID_NO_INSTALL }}
           PUSHPLUS_TOKEN: ${{ secrets.PUSHPLUS_TOKEN }}
           BARK_URL: ${{ secrets.BARK_URL }}
           WECOM_WEBHOOK: ${{ secrets.WECOM_WEBHOOK }}

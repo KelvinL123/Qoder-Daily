@@ -1,5 +1,15 @@
 # 更新日志
 
+## v1.0.8（2026-10-23）
+
+- 跟进 Qoder CN 权益中心/活动下发变更：中国版每日 100 Credits 现在也要求 Qoder CN 自己的官方设备身份。
+- UMID 身份改为地区隔离：中国版只读 Qoder CN / `qoderclicn` 并使用环境参数 `0`；国际版只读 Qoder / `qodercli` 并使用环境参数 `3`。
+- 中国版新增 CLI 缓存发现（`~/.qoder-cn/.bin/runtime-info-*`）、`/opt/Qoder-CN` 与客户端目录探测，并支持从 `@qodercn-ai/qoderclicn` 自动提取组件；国际版继续使用 `@qoder-ai/qodercli`。
+- 无本机客户端时的 `Cosy-Version` 兜底从 `0.2.5` 升到当前桌面 worker runtime `1.1.69`。
+- 新增 `QODERCN_RUNTIME_INFO` / `QODER_RUNTIME_INFO` 地区覆盖变量，保留 `QODER_UMID_PATH` 通用覆盖。
+- 中国版活动行缺失时也会明确提示 UMID 身份要求，不再只报“没有可领取活动”。
+- 新增地区隔离与缺失身份提示回归测试，测试总数 19 项。
+
 ## v1.0.7（2026-10-23）
 
 - 开窗延迟重试改为默认开启：10:00-10:30 CST 内暂未发现活动行时，按 90 秒间隔最多重试 16 次。

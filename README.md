@@ -18,7 +18,7 @@
 
 ## ✨ 这是什么
 
-一个脚本完成 Qoder 中国版 / 国际版的每日签到：读取实时活动列表 → 领取 `CLAIM_BENEFIT` 活动 → 输出中文报告并推送。国际版（每天 100 Credits）只对带设备风控身份（UMID）的请求下发活动，脚本按「环境变量 → 组件 → 官方包提取」分层获取，缺身份时如实提示、不谎报已签。配套登录工具走官方设备授权，浏览器确认一次即可拿到 Token，不需要验证码、不需要抓包。
+一个脚本完成 Qoder 中国版 / 国际版的每日签到：读取实时活动列表 → 领取 `CLAIM_BENEFIT` 活动 → 输出中文报告并推送。中国版和国际版（每天 100 Credits）都只对带对应地区官方设备身份（UMID）的请求下发活动；脚本按「环境变量 → 组件 → 对应地区官方包提取」分层获取，缺身份时如实提示、不谎报已签。配套登录工具走官方设备授权，浏览器确认一次即可拿到 Token，不需要验证码、不需要抓包。
 
 > 🎯 一句话：**配好 Token，剩下的交给它。**
 >
@@ -30,7 +30,7 @@
 
 - ✅ **每日签到**：自动找可领活动并领取 credits，已领取识别为今日完成
 - 🎁 **Pro 升级包**：从 campaigns 发现，先用只读 `/reward` 核对面值，再 claim 并用额度回读核对真实增量；国际版直接跳过
-- 🌍 **国际版签到**：每天 100 Credits，走 `QODER_GLOBAL_TOKENS`；需要 UMID 风控身份（组件 / 环境变量），活动窗口每天 10:00（UTC+8）开启，未开不落已签、后续轮次自动补领
+- 🌍 **双地区设备身份**：中国版使用 Qoder CN 的 `runtime-info` / `qoderclicn`（UMID 环境 0），国际版使用 Qoder 的 `runtime-info` / `qodercli`（环境 3）；活动窗口每天 10:00（UTC+8）开启，未开不落已签、后续轮次自动补领
 - 🔐 **Token 自动续期**：refresh_token 轮换后自动落盘，长期无人值守
 - 👥 **多账号**：环境变量换行或 `&` 分隔，逐账号容错
 - 📢 **多渠道推送**：PushPlus / Bark / 企业微信 / 钉钉 / 青龙通知
@@ -76,7 +76,8 @@
 |---|---|---|
 | `QODER_TOKENS` | QODER_TOKENS | 必填 |
 | `QODER_CACHE_KEY` | QODER_CACHE_KEY（仅工作流使用） | 启用 Actions 时必填：加密轮换 token 缓存的随机长字符串 |
-| `QODER_GLOBAL_TOKENS` / `QODER_MACHINE_TOKEN` / `QODER_MACHINE_CODE` / `QODER_MACHINE_TYPE` | 同名环境变量 | 有国际版账号时填 |
+| `QODER_GLOBAL_TOKENS` / `QODER_MACHINE_TOKEN` / `QODER_MACHINE_CODE` / `QODER_MACHINE_TYPE` | 同名环境变量 | 有国际版账号，或需要手动覆盖设备身份时填 |
+| `QODERCN_RUNTIME_INFO` / `QODER_RUNTIME_INFO` / `QODER_UMID_PATH` | `runtime-info` 路径 | 可选：分别覆盖中国版 / 国际版 / 通用 UMID 组件路径 |
 | `PUSHPLUS_TOKEN` / `BARK_URL` / `WECOM_WEBHOOK` / `DINGTALK_WEBHOOK` / `DINGTALK_SECRET` | 同名推送变量 | 可选 |
 
 > 公开仓库的 Secrets 是加密的，日志里不会回显；脚本也不会把 Token 写进仓库文件。
@@ -113,8 +114,9 @@ python qoder_login.py --region global # 国际版（Token 填 QODER_GLOBAL_TOKEN
 |---|---|---|
 | `QODER_TOKENS` | `access_token` / `access_token\|refresh_token` / `备注\|access_token\|refresh_token` | 中国版账号，多账号换行或 `&` |
 | `QODER_GLOBAL_TOKENS` | 同上，可再加 `\|uid`（`备注\|access\|refresh\|uid`） | 国际版账号，请求走 `openapi.qoder.sh` |
-| `QODER_MACHINE_TOKEN` / `QODER_MACHINE_CODE` / `QODER_MACHINE_TYPE` | 三件套 | 国际版设备风控身份（与组件二选一） |
-| `QODER_UMID_PATH` / `QODER_UMID_NO_INSTALL` | `runtime-info` 路径 / `1` | 指定 UMID 组件；或禁止自动从官方包提取 |
+| `QODER_MACHINE_TOKEN` / `QODER_MACHINE_CODE` / `QODER_MACHINE_TYPE` | 三件套 | 设备风控身份，中国版 / 国际版均可使用（与组件二选一） |
+| `QODERCN_RUNTIME_INFO` / `QODER_RUNTIME_INFO` | `runtime-info` 路径 | 分别指定中国版 / 国际版官方组件；地区隔离，互不混用 |
+| `QODER_UMID_PATH` / `QODER_UMID_NO_INSTALL` | `runtime-info` 路径 / `1` | 指定通用 UMID 组件；或禁止自动从对应地区官方包提取 |
 | `QODER_WINDOW_RETRY` | `1` / `0` | 10:00-10:30 CST 内暂未下发活动行时按 90 秒重试，默认开启 |
 | `QODER_WINDOW_RETRY_MAX` / `QODER_WINDOW_RETRY_GAP` | 次数 / 秒 | 默认最多 16 次、间隔 90 秒 |
 
@@ -148,7 +150,7 @@ python qoder_login.py --region global # 国际版（Token 填 QODER_GLOBAL_TOKEN
 
 - **Token 多久失效？** 配了 refresh_token 会自动续期；只有 access token 时过期需重新登录。
 - **授权页打不开/超时？** 重新运行工具再确认一次；确认时请用要签到的那个账号。
-- **国际版能签到吗？** 可以：国际版（每天 100 Credits）只对带设备风控身份（UMID）的请求下发活动。脚本按「环境变量三件套 → `QODER_UMID_PATH` → 本机客户端/qodercli → 官方包提取」获取身份；都没有时如实提示「未领取」，不会记成已签。活动窗口每天 10:00（UTC+8）开启。
+- **中国版 / 国际版都能签到吗？** 可以：两个地区都要求对应官方设备身份。中国版读 Qoder CN / `qoderclicn` 并使用 UMID 环境 0；国际版读 Qoder / `qodercli` 并使用环境 3。脚本会按地区隔离客户端、CLI 缓存和提取目录；都没有时如实提示「未领取」，不会记成已签。
 - **Pro +1800 还会有吗？** 官方已不再常规投放。脚本只在 campaigns 里实际发现 Pro/upgrade 行，或 `/reward` 只读核实到至少 1000 Credits 后才领取；不会请求不存在的 `pro-upgrade` 端点，也不会承诺固定 +1800。
 
 ## 📁 目录结构
