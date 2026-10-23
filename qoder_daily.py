@@ -620,11 +620,26 @@ def refresh_account(account):
     return True
 
 
+def auth_dead_response(response):
+    """HTTP 401/403 或已知业务码表示会话已失效，需要立即强制续期。"""
+    if response.status_code in (401, 403):
+        return True
+    payload = json_of(response)
+    if not isinstance(payload, dict):
+        return False
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+    codes = (
+        first_text(payload.get("code"), payload.get("Code")),
+        first_text(data.get("code"), data.get("Code")),
+    )
+    return any(code in ("105", "10019901001") for code in codes)
+
+
 def fetch_campaigns(account):
     headers, risk_note = risky_sash_headers(account, account.get("uid", ""))
     response = request("GET", account["base"] + CAMPAIGNS_PATH,
                        headers=headers)
-    if response.status_code in (401, 403) and account.get("refresh"):
+    if auth_dead_response(response) and account.get("refresh"):
         refresh_account(account)
         headers, risk_note = risky_sash_headers(account, account.get("uid", ""))
         response = request("GET", account["base"] + CAMPAIGNS_PATH,

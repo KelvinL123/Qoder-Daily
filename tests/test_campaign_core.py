@@ -41,11 +41,12 @@ class CampaignCoreTests(unittest.TestCase):
             return FakeResponse()
 
         module = load_functions(
-            "fetch_campaigns",
+            "fetch_campaigns", "auth_dead_response", "first_text",
             CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
             risky_sash_headers=lambda account, uid="": ({}, None),
             request=request,
             refresh_account=lambda account: None,
+            json_of=lambda response: response.payload,
         )
         account = {"base": "https://example.test", "refresh": ""}
         module["fetch_campaigns"](account)
@@ -54,6 +55,35 @@ class CampaignCoreTests(unittest.TestCase):
             captured["url"],
         )
         self.assertNotIn("forceRefresh", captured["url"])
+
+    def test_business_code_105_forces_refresh_and_one_retry(self):
+        calls = {"request": 0, "refresh": 0}
+        responses = [
+            FakeResponse(200, {"code": 105, "message": "token expired"}),
+            FakeResponse(200, {"data": {"campaigns": []}}),
+        ]
+
+        def request(method, url, headers=None, retries=3):
+            calls["request"] += 1
+            return responses.pop(0)
+
+        def refresh(account):
+            calls["refresh"] += 1
+            return True
+
+        module = load_functions(
+            "fetch_campaigns", "auth_dead_response", "first_text",
+            CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+            risky_sash_headers=lambda account, uid="": ({}, None),
+            request=request,
+            refresh_account=refresh,
+            json_of=lambda response: response.payload,
+        )
+        response, _note = module["fetch_campaigns"](
+            {"base": "https://example.test", "refresh": "drt-test"})
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(2, calls["request"])
+        self.assertEqual(1, calls["refresh"])
 
     def test_claim_response_matrix(self):
         module = load_functions(
