@@ -34,7 +34,7 @@
    WECOM_WEBHOOK   企微群机器人地址或 key（可选）
    DINGTALK_WEBHOOK  钉钉机器人 webhook（可选）
    DINGTALK_SECRET   钉钉加签密钥（可选）
-   QODER_WINDOW_RETRY  【可选】10:00-10:30 CST 内暂未下发时按 90 秒重试（默认 0）
+   QODER_WINDOW_RETRY  【可选】10:00-10:30 CST 内暂未下发时按 90 秒重试（默认 1）
 
 ⌨️ 命令
    python qoder_daily.py                 正常签到
@@ -698,7 +698,10 @@ def claim_response_verdict(response):
 
 
 def daily_window_retry_enabled():
-    return _env("QODER_WINDOW_RETRY").lower() in ("1", "true", "yes", "on")
+    raw = _env("QODER_WINDOW_RETRY")
+    if not raw:
+        return True
+    return raw.lower() not in ("0", "false", "no", "off")
 
 
 def daily_window_active():

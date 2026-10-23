@@ -115,7 +115,7 @@ python qoder_login.py --region global # 国际版（Token 填 QODER_GLOBAL_TOKEN
 | `QODER_GLOBAL_TOKENS` | 同上，可再加 `\|uid`（`备注\|access\|refresh\|uid`） | 国际版账号，请求走 `openapi.qoder.sh` |
 | `QODER_MACHINE_TOKEN` / `QODER_MACHINE_CODE` / `QODER_MACHINE_TYPE` | 三件套 | 国际版设备风控身份（与组件二选一） |
 | `QODER_UMID_PATH` / `QODER_UMID_NO_INSTALL` | `runtime-info` 路径 / `1` | 指定 UMID 组件；或禁止自动从官方包提取 |
-| `QODER_WINDOW_RETRY` | `1` / `0` | 10:00-10:30 CST 内暂未下发活动行时按 90 秒重试；Actions 模板默认开启 |
+| `QODER_WINDOW_RETRY` | `1` / `0` | 10:00-10:30 CST 内暂未下发活动行时按 90 秒重试，默认开启 |
 | `QODER_WINDOW_RETRY_MAX` / `QODER_WINDOW_RETRY_GAP` | 次数 / 秒 | 默认最多 16 次、间隔 90 秒 |
 
 ## ⌨️ 命令行参数

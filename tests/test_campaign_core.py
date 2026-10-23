@@ -170,6 +170,14 @@ class CampaignCoreTests(unittest.TestCase):
             FakeDateTime.current = type("Now", (), {"hour": hour, "minute": minute})()
             self.assertEqual(expected, module["daily_window_active"]())
 
+    def test_window_retry_defaults_on_and_can_be_disabled(self):
+        enabled_module = load_functions(
+            "daily_window_retry_enabled", _env=lambda name: "")
+        self.assertTrue(enabled_module["daily_window_retry_enabled"]())
+        disabled_module = load_functions(
+            "daily_window_retry_enabled", _env=lambda name: "0")
+        self.assertFalse(disabled_module["daily_window_retry_enabled"]())
+
     def test_window_retry_fetches_until_daily_row_appears(self):
         daily = {
             "campaignId": "daily-1", "campaignKey": "act-daily",
