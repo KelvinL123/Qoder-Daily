@@ -1,5 +1,12 @@
 # 更新日志
 
+## v1.0.10（2026-10-23）
+
+- 跟进 Qoder CN 活动列表按请求头分桶的下发异常：完整设备头返回 HTTP 200 + `showCampaign:false` / `campaigns:[]` 时，改用 `Authorization`、`Cosy-ClientType`、`User-Agent`、`Content-Type` 四件套复取一次。
+- 最小头也返回空表时保留首次空响应；最小头自身返回 `401`、业务码 `105`、`429` 或 `5xx` 时原样透传，不伪装成“暂无活动”。
+- 空表复取只对中国版启用；国际版路径保持不变。原有 token 失效续期后再请求的流程继续保留。
+- 参考上游实证 PR [smart-open/TraeWorkAssistant#133](https://github.com/smart-open/TraeWorkAssistant/pull/133)（merge `6d0056dd93a914d056f81dcf7dfcc7b07725119a`），新增 7 项离线回归测试，完整测试增至 28 项；不执行真实账号领取。
+
 ## v1.0.9（2026-10-23）
 
 - 活动列表遇到 HTTP 401/403 或业务码 `105` / `10019901001` 时，不再只看 HTTP 状态；强制续期一次后同号重试，避免令牌“时间未过期但已被上游作废”时一直失败。

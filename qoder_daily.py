@@ -17,6 +17,8 @@
    国际版使用 Qoder 的 runtime-info / qodercli 与 UMID 环境 3。脚本会按地区
    查找组件；Linux 容器里找不到时会从对应官方 npm 包提取（sha512 校验，可用
    QODER_UMID_NO_INSTALL=1 关闭）。
+   中国版活动列表若在完整设备头下返回 HTTP 200 空表，会按上游实测形态改用
+   最小鉴权四件套复取一次；国际版不做该降级。
    官方活动窗口每天 10:00（UTC+8）开启，没到点或未下发时按中性文案说明。
 
 🔑 环境变量
@@ -595,6 +597,16 @@ def sash_headers(token):
     }
 
 
+def minimal_sash_headers(token):
+    """中国版空表复取使用上游实测的最小鉴权四件套。"""
+    return {
+        "authorization": "Bearer %s" % token,
+        "cosy-clienttype": SASH_CLIENT_TYPE,
+        "user-agent": SASH_USER_AGENT,
+        "content-type": "application/json",
+    }
+
+
 def refresh_account(account):
     refresh = account.get("refresh", "")
     if not refresh:
@@ -635,15 +647,49 @@ def auth_dead_response(response):
     return any(code in ("105", "10019901001") for code in codes)
 
 
-def fetch_campaigns(account):
-    headers, risk_note = risky_sash_headers(account, account.get("uid", ""))
+def campaign_response_is_empty(response):
+    """仅在成功且明确为空/未展示活动列表时返回 True。"""
+    if response.status_code != 200 or auth_dead_response(response):
+        return False
+    payload = json_of(response)
+    if not isinstance(payload, dict):
+        return False
+    bodies = [payload]
+    data = payload.get("data")
+    if isinstance(data, dict):
+        bodies.append(data)
+    for body in bodies:
+        campaigns = body.get("campaigns")
+        if isinstance(campaigns, list):
+            return not campaigns
+        if campaigns is None and body.get("showCampaign") is False:
+            return True
+    return False
+
+
+def _fetch_campaigns_once(account, headers):
     response = request("GET", account["base"] + CAMPAIGNS_PATH,
                        headers=headers)
+    if (region_key(account.get("region", "cn")) == "cn"
+            and campaign_response_is_empty(response)):
+        original = response
+        response = request(
+            "GET", account["base"] + CAMPAIGNS_PATH,
+            headers=minimal_sash_headers(account["access"]),
+            retries=1,
+        )
+        if campaign_response_is_empty(response):
+            return original
+    return response
+
+
+def fetch_campaigns(account):
+    headers, risk_note = risky_sash_headers(account, account.get("uid", ""))
+    response = _fetch_campaigns_once(account, headers)
     if auth_dead_response(response) and account.get("refresh"):
         refresh_account(account)
         headers, risk_note = risky_sash_headers(account, account.get("uid", ""))
-        response = request("GET", account["base"] + CAMPAIGNS_PATH,
-                           headers=headers)
+        response = _fetch_campaigns_once(account, headers)
     return response, risk_note
 
 
@@ -785,6 +831,11 @@ def fetch_campaign_rows(account):
     response, risk_note = fetch_campaigns(account)
     if response.status_code in (401, 403):
         return [], response, risk_note, "签到活动查询失败（HTTP %s），请确认凭证有效且地区选择正确" % response.status_code
+    if auth_dead_response(response):
+        return [], response, risk_note, (
+            "签到活动查询失败（业务码 105 / 10019901001，续期后仍无效），"
+            "请重新登录或稍后重试"
+        )
     if response.status_code == 429:
         return [], response, risk_note, "签到活动查询失败（HTTP 429），请稍后重试"
     if response.status_code != 200:

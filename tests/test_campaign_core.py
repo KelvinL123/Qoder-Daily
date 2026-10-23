@@ -41,8 +41,12 @@ class CampaignCoreTests(unittest.TestCase):
             return FakeResponse()
 
         module = load_functions(
-            "fetch_campaigns", "auth_dead_response", "first_text",
+            "fetch_campaigns", "_fetch_campaigns_once", "auth_dead_response",
+            "campaign_response_is_empty", "minimal_sash_headers",
+            "first_text", "region_key",
             CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+            SASH_CLIENT_TYPE="10",
+            SASH_USER_AGENT="Qoder",
             risky_sash_headers=lambda account, uid="": ({}, None),
             request=request,
             refresh_account=lambda account: None,
@@ -60,7 +64,7 @@ class CampaignCoreTests(unittest.TestCase):
         calls = {"request": 0, "refresh": 0}
         responses = [
             FakeResponse(200, {"code": 105, "message": "token expired"}),
-            FakeResponse(200, {"data": {"campaigns": []}}),
+            FakeResponse(200, {"data": {"campaigns": [{"id": "daily"}]}}),
         ]
 
         def request(method, url, headers=None, retries=3):
@@ -72,8 +76,12 @@ class CampaignCoreTests(unittest.TestCase):
             return True
 
         module = load_functions(
-            "fetch_campaigns", "auth_dead_response", "first_text",
+            "fetch_campaigns", "_fetch_campaigns_once", "auth_dead_response",
+            "campaign_response_is_empty", "minimal_sash_headers",
+            "first_text", "region_key",
             CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+            SASH_CLIENT_TYPE="10",
+            SASH_USER_AGENT="Qoder",
             risky_sash_headers=lambda account, uid="": ({}, None),
             request=request,
             refresh_account=refresh,
@@ -84,6 +92,267 @@ class CampaignCoreTests(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual(2, calls["request"])
         self.assertEqual(1, calls["refresh"])
+
+    def test_cn_full_headers_empty_then_minimal_headers_success(self):
+        original = FakeResponse(200, {
+            "showCampaign": False,
+            "campaigns": [],
+        })
+        recovered = FakeResponse(200, {
+            "showCampaign": True,
+            "campaigns": [{"campaignId": "daily", "claimStatus": "CLAIMABLE"}],
+        })
+        calls = []
+
+        def request(method, url, headers=None, retries=3):
+            calls.append({
+                "method": method,
+                "url": url,
+                "headers": headers,
+                "retries": retries,
+            })
+            return original if len(calls) == 1 else recovered
+
+        module = load_functions(
+            "fetch_campaigns", "_fetch_campaigns_once", "auth_dead_response",
+            "campaign_response_is_empty", "minimal_sash_headers", "first_text",
+            CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+            SASH_CLIENT_TYPE="10",
+            SASH_USER_AGENT="Qoder",
+            risky_sash_headers=lambda account, uid="": (
+                {"authorization": "Bearer dt-current",
+                 "cosy-machineid": "device-id"}, None),
+            request=request,
+            refresh_account=lambda account: None,
+            json_of=lambda response: response.payload,
+            region_key=lambda region: (
+                "global" if region in ("global", "intl", "international")
+                else "cn"),
+        )
+        response, _note = module["fetch_campaigns"]({
+            "region": "cn",
+            "base": "https://cn.example.test",
+            "access": "dt-current",
+            "refresh": "",
+        })
+
+        self.assertIs(recovered, response)
+        self.assertEqual(2, len(calls))
+        self.assertEqual({
+            "authorization": "Bearer dt-current",
+            "cosy-clienttype": "10",
+            "user-agent": "Qoder",
+            "content-type": "application/json",
+        }, calls[1]["headers"])
+        self.assertEqual(1, calls[1]["retries"])
+
+    def test_cn_minimal_headers_also_empty_preserves_original(self):
+        original = FakeResponse(200, {
+            "showCampaign": False,
+            "campaigns": [],
+        })
+        fallback_empty = FakeResponse(200, {"campaigns": []})
+        calls = []
+
+        def request(method, url, headers=None, retries=3):
+            calls.append(headers)
+            return original if len(calls) == 1 else fallback_empty
+
+        module = load_functions(
+            "fetch_campaigns", "_fetch_campaigns_once", "auth_dead_response",
+            "campaign_response_is_empty", "minimal_sash_headers", "first_text",
+            CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+            SASH_CLIENT_TYPE="10",
+            SASH_USER_AGENT="Qoder",
+            risky_sash_headers=lambda account, uid="": (
+                {"authorization": "Bearer dt-current"}, None),
+            request=request,
+            refresh_account=lambda account: None,
+            json_of=lambda response: response.payload,
+            region_key=lambda region: "cn",
+        )
+        response, _note = module["fetch_campaigns"]({
+            "region": "cn",
+            "base": "https://cn.example.test",
+            "access": "dt-current",
+        })
+
+        self.assertIs(original, response)
+        self.assertEqual(2, len(calls))
+
+    def test_empty_campaign_fallback_is_limited_to_cn(self):
+        cases = [
+            ("global", {"campaigns": []}, 1),
+            ("cn", {"campaigns": [{"campaignId": "daily"}]}, 1),
+        ]
+        for region, payload, expected_calls in cases:
+            with self.subTest(region=region, payload=payload):
+                calls = []
+
+                def request(method, url, headers=None, retries=3):
+                    calls.append(headers)
+                    return FakeResponse(200, payload)
+
+                module = load_functions(
+                    "fetch_campaigns", "_fetch_campaigns_once",
+                    "auth_dead_response",
+                    "campaign_response_is_empty",
+                    "minimal_sash_headers", "first_text",
+                    CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+                    SASH_CLIENT_TYPE="10",
+                    SASH_USER_AGENT="Qoder",
+                    risky_sash_headers=lambda account, uid="": (
+                        {"authorization": "Bearer dt-current"}, None),
+                    request=request,
+                    refresh_account=lambda account: None,
+                    json_of=lambda response: response.payload,
+                    region_key=lambda value: (
+                        "global" if value in ("global", "intl", "international")
+                        else "cn"),
+                )
+                module["fetch_campaigns"]({
+                    "region": region,
+                    "base": "https://example.test",
+                    "access": "dt-current",
+                })
+                self.assertEqual(expected_calls, len(calls))
+
+    def test_minimal_fallback_errors_are_not_masked(self):
+        failures = [
+            FakeResponse(401, {"code": 401}),
+            FakeResponse(200, {"code": 105}),
+            FakeResponse(429, {"message": "rate limited"}),
+            FakeResponse(503, {"message": "unavailable"}),
+        ]
+        for failure in failures:
+            with self.subTest(status=failure.status_code, payload=failure.payload):
+                responses = [
+                    FakeResponse(200, {"showCampaign": False, "campaigns": []}),
+                    failure,
+                ]
+
+                module = load_functions(
+                    "fetch_campaigns", "_fetch_campaigns_once",
+                    "auth_dead_response",
+                    "campaign_response_is_empty",
+                    "minimal_sash_headers", "first_text",
+                    CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+                    SASH_CLIENT_TYPE="10",
+                    SASH_USER_AGENT="Qoder",
+                    risky_sash_headers=lambda account, uid="": (
+                        {"authorization": "Bearer dt-current"}, None),
+                    request=lambda method, url, headers=None, retries=3: (
+                        responses.pop(0)),
+                    refresh_account=lambda account: None,
+                    json_of=lambda response: response.payload,
+                    region_key=lambda region: "cn",
+                )
+                response, _note = module["fetch_campaigns"]({
+                    "region": "cn",
+                    "base": "https://cn.example.test",
+                    "access": "dt-current",
+                })
+                self.assertIs(failure, response)
+
+    def test_unsuccessful_campaigns_do_not_trigger_minimal_fallback(self):
+        failures = [
+            FakeResponse(401, {"code": 401}),
+            FakeResponse(200, {"code": 105, "campaigns": []}),
+            FakeResponse(429, {"message": "rate limited"}),
+            FakeResponse(500, {"message": "server error"}),
+        ]
+        for failure in failures:
+            with self.subTest(status=failure.status_code, payload=failure.payload):
+                calls = []
+
+                def request(method, url, headers=None, retries=3):
+                    calls.append(headers)
+                    return failure
+
+                module = load_functions(
+                    "fetch_campaigns", "_fetch_campaigns_once",
+                    "auth_dead_response",
+                    "campaign_response_is_empty",
+                    "minimal_sash_headers", "first_text",
+                    CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+                    SASH_CLIENT_TYPE="10",
+                    SASH_USER_AGENT="Qoder",
+                    risky_sash_headers=lambda account, uid="": (
+                        {"authorization": "Bearer dt-current"}, None),
+                    request=request,
+                    refresh_account=lambda account: None,
+                    json_of=lambda response: response.payload,
+                    region_key=lambda region: "cn",
+                )
+                response, _note = module["fetch_campaigns"]({
+                    "region": "cn",
+                    "base": "https://cn.example.test",
+                    "access": "dt-current",
+                })
+                self.assertIs(failure, response)
+                self.assertEqual(1, len(calls))
+
+    def test_minimal_fallback_105_reuses_token_refresh_path(self):
+        responses = [
+            FakeResponse(200, {"showCampaign": False, "campaigns": []}),
+            FakeResponse(200, {"code": 105}),
+            FakeResponse(200, {"campaigns": [{"campaignId": "daily"}]}),
+        ]
+        calls = {"request": 0, "refresh": 0}
+
+        def request(method, url, headers=None, retries=3):
+            calls["request"] += 1
+            return responses.pop(0)
+
+        def refresh(account):
+            calls["refresh"] += 1
+            account["access"] = "dt-renewed"
+            return True
+
+        module = load_functions(
+            "fetch_campaigns", "_fetch_campaigns_once", "auth_dead_response",
+            "campaign_response_is_empty", "minimal_sash_headers", "first_text",
+            CAMPAIGNS_PATH="/sash/api/v1/me/campaigns",
+            SASH_CLIENT_TYPE="10",
+            SASH_USER_AGENT="Qoder",
+            risky_sash_headers=lambda account, uid="": (
+                {"authorization": "Bearer %s" % account["access"]}, None),
+            request=request,
+            refresh_account=refresh,
+            json_of=lambda response: response.payload,
+            region_key=lambda region: "cn",
+        )
+        response, _note = module["fetch_campaigns"]({
+            "region": "cn",
+            "base": "https://cn.example.test",
+            "access": "dt-expired",
+            "refresh": "drt-current",
+        })
+
+        self.assertEqual("daily", response.payload["campaigns"][0]["campaignId"])
+        self.assertEqual(3, calls["request"])
+        self.assertEqual(1, calls["refresh"])
+
+    def test_campaign_rows_report_auth_rate_limit_and_server_errors(self):
+        failures = [
+            FakeResponse(401, {"message": "unauthorized"}),
+            FakeResponse(200, {"code": 105}),
+            FakeResponse(429, {"message": "rate limited"}),
+            FakeResponse(503, {"message": "unavailable"}),
+        ]
+        for failure in failures:
+            with self.subTest(status=failure.status_code, payload=failure.payload):
+                module = load_functions(
+                    "fetch_campaign_rows", "auth_dead_response", "first_text",
+                    fetch_campaigns=lambda account: (failure, None),
+                    json_of=lambda response: response.payload,
+                    campaign_rows_from_payload=lambda payload: [],
+                )
+                rows, response, _risk_note, error = module[
+                    "fetch_campaign_rows"]({"region": "cn"})
+                self.assertEqual([], rows)
+                self.assertIs(failure, response)
+                self.assertTrue(error)
 
     def test_claim_response_matrix(self):
         module = load_functions(

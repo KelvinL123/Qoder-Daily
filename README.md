@@ -30,7 +30,8 @@
 
 - ✅ **每日签到**：自动找可领活动并领取 credits，已领取识别为今日完成
 - 🎁 **Pro 升级包**：从 campaigns 发现，先用只读 `/reward` 核对面值，再 claim 并用额度回读核对真实增量；国际版直接跳过
-- 🌍 **双地区设备身份**：中国版使用 Qoder CN 的 `runtime-info` / `qoderclicn`（UMID 环境 0），国际版使用 Qoder 的 `runtime-info` / `qodercli`（环境 3）；活动窗口每天 10:00（UTC+8）开启，未开不落已签、后续轮次自动补领
+- 🌍 **双地区设备身份**：中国版使用 Qoder CN 的 `runtime-info` / `qoderclicn`（UMID 环境 0），国际版使用 Qoder 的 `runtime-info` / `qodercli`（环境 3）；中国版完整设备头返回空活动列表时，会用最小鉴权四件套复取一次，国际版不做该降级
+- 🕙 **开窗补拉**：活动窗口每天 10:00（UTC+8）开启，未开不落已签、后续轮次自动补领
 - 🔐 **Token 自动续期**：refresh_token 轮换后自动落盘，长期无人值守
 - 👥 **多账号**：环境变量换行或 `&` 分隔，逐账号容错
 - 📢 **多渠道推送**：PushPlus / Bark / 企业微信 / 钉钉 / 青龙通知
@@ -151,6 +152,7 @@ python qoder_login.py --region global # 国际版（Token 填 QODER_GLOBAL_TOKEN
 - **Token 多久失效？** 配了 refresh_token 会自动续期；只有 access token 时过期需重新登录。
 - **授权页打不开/超时？** 重新运行工具再确认一次；确认时请用要签到的那个账号。
 - **中国版 / 国际版都能签到吗？** 可以：两个地区都要求对应官方设备身份。中国版读 Qoder CN / `qoderclicn` 并使用 UMID 环境 0；国际版读 Qoder / `qodercli` 并使用环境 3。脚本会按地区隔离客户端、CLI 缓存和提取目录；都没有时如实提示「未领取」，不会记成已签。
+- **中国版完整设备头返回空活动列表怎么办？** 脚本只在成功响应明确为空或 `showCampaign:false` 时，用 `Authorization` / `Cosy-ClientType` / `User-Agent` / `Content-Type` 最小头复取一次；仍为空则保留原响应，鉴权、限流和服务端错误会照常报告。国际版不启用该复取。
 - **Pro +1800 还会有吗？** 官方已不再常规投放。脚本只在 campaigns 里实际发现 Pro/upgrade 行，或 `/reward` 只读核实到至少 1000 Credits 后才领取；不会请求不存在的 `pro-upgrade` 端点，也不会承诺固定 +1800。
 
 ## 📁 目录结构
